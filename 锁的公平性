@@ -1,0 +1,14 @@
+Java 的 synchronized 块并不保证尝试进入它们的线程的顺序。因此，如果多个线程不断竞争访问相同的 synchronized 同步块，就存在一种风险，其中一个或多个线程永远也得不到访问权 —— 也就是说访问权总是分配给了其它线程。这种情况被称作线程饥饿。为了避免这种问题，锁需要实现公平性。本文所展现的锁在内部是用 synchronized 同步块实现的，因此它们也不保证公平性。饥饿和公平中有更多关于该内容的讨论。
+
+在 finally 语句中调用 unlock()
+如果用 Lock 来保护临界区，并且临界区有可能会抛出异常，那么在 finally 语句中调用 unlock()就显得非常重要了。这样可以保证这个锁对象可以被解锁以便其它线程能继续对其加锁。以下是一个示例：
+
+lock.lock();
+try{
+    //do critical section code,
+    //which may throw exception
+} finally {
+    lock.unlock();
+}
+
+这个简单的结构可以保证当临界区抛出异常时 Lock 对象可以被解锁。如果不是在 finally 语句中调用的 unlock()，当临界区抛出异常时，Lock 对象将永远停留在被锁住的状态，这会导致其它所有在该 Lock 对象上调用 lock()的线程一直阻塞。
