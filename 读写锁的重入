@@ -1,0 +1,169 @@
+上面实现的读/写锁(ReadWriteLock) 是不可重入的，当一个已经持有写锁的线程再次请求写锁时，就会被阻塞。原因是已经有一个写线程了——就是它自己。此外，考虑下面的例子：
+
+1.Thread 1 获得了读锁。
+2.Thread 2 请求写锁，但因为 Thread 1 持有了读锁，所以写锁请求被阻塞。
+3.Thread 1 再想请求一次读锁，但因为 Thread 2 处于请求写锁的状态，所以想再次获取读锁也会被阻塞。 上面这种情形使用前面的 ReadWriteLock 就会被锁定——一种类似于死锁的情形。不会再有线程能够成功获取读锁或写锁了。
+为了让 ReadWriteLock 可重入，需要对它做一些改进。下面会分别处理读锁的重入和写锁的重入。
+
+读锁重入
+为了让 ReadWriteLock 的读锁可重入，我们要先为读锁重入建立规则：
+
+要保证某个线程中的读锁可重入，要么满足获取读锁的条件（没有写或写请求），要么已经持有读锁（不管是否有写请求）。 要确定一个线程是否已经持有读锁，可以用一个 map 来存储已经持有读锁的线程以及对应线程获取读锁的次数，当需要判断某个线程能否获得读锁时，就利用 map 中存储的数据进行判断。下面是方法 lockRead 和 unlockRead 修改后的的代码：
+
+public class ReadWriteLock{
+    private Map<Thread, Integer> readingThreads =
+        new HashMap<Thread, Integer>();
+
+    private int writers = 0;
+    private int writeRequests = 0;
+
+    public synchronized void lockRead() 
+        throws InterruptedException{
+        Thread callingThread = Thread.currentThread();
+        while(! canGrantReadAccess(callingThread)){
+            wait();                                                                   
+        }
+
+        readingThreads.put(callingThread,
+            (getAccessCount(callingThread) + 1));
+    }
+
+    public synchronized void unlockRead(){
+        Thread callingThread = Thread.currentThread();
+        int accessCount = getAccessCount(callingThread);
+        if(accessCount == 1) { 
+            readingThreads.remove(callingThread); 
+        } else {
+            readingThreads.put(callingThread, (accessCount -1)); 
+        }
+        notifyAll();
+    }
+
+    private boolean canGrantReadAccess(Thread callingThread){
+        if(writers > 0) return false;
+        if(isReader(callingThread) return true;
+        if(writeRequests > 0) return false;
+        return true;
+    }
+
+    private int getReadAccessCount(Thread callingThread){
+        Integer accessCount = readingThreads.get(callingThread);
+        if(accessCount == null) return 0;
+        return accessCount.intValue();
+    }
+
+    private boolean isReader(Thread callingThread){
+        return readingThreads.get(callingThread) != null;
+    }
+}
+
+写锁重入
+仅当一个线程已经持有写锁，才允许写锁重入（再次获得写锁）。下面是方法 lockWrite 和 unlockWrite 修改后的的代码。
+
+public class ReadWriteLock{
+    private Map<Thread, Integer> readingThreads =
+        new HashMap<Thread, Integer>();
+
+    private int writeAccesses    = 0;
+    private int writeRequests    = 0;
+    private Thread writingThread = null;
+
+    public synchronized void lockWrite() 
+        throws InterruptedException{
+        writeRequests++;
+        Thread callingThread = Thread.currentThread();
+        while(!canGrantWriteAccess(callingThread)){
+            wait();
+        }
+        writeRequests--;
+        writeAccesses++;
+        writingThread = callingThread;
+    }
+
+    public synchronized void unlockWrite() 
+        throws InterruptedException{
+        writeAccesses--;
+        if(writeAccesses == 0){
+            writingThread = null;
+        }
+        notifyAll();
+    }
+
+    private boolean canGrantWriteAccess(Thread callingThread){
+        if(hasReaders()) return false;
+        if(writingThread == null)    return true;
+        if(!isWriter(callingThread)) return false;
+        return true;
+    }
+
+    private boolean hasReaders(){
+        return readingThreads.size() > 0;
+    }
+
+    private boolean isWriter(Thread callingThread){
+        return writingThread == callingThread;
+    }
+}
+
+读锁升级到写锁
+有时，我们希望一个拥有读锁的线程，也能获得写锁。想要允许这样的操作，要求这个线程是唯一一个拥有读锁的线程。writeLock()需要做点改动来达到这个目的：
+public class ReadWriteLock{
+    private Map<Thread, Integer> readingThreads =
+        new HashMap<Thread, Integer>();
+
+    private int writeAccesses    = 0;
+    private int writeRequests    = 0;
+    private Thread writingThread = null;
+
+    public synchronized void lockWrite() 
+        throws InterruptedException{
+        writeRequests++;
+        Thread callingThread = Thread.currentThread();
+        while(!canGrantWriteAccess(callingThread)){
+            wait();
+        }
+        writeRequests--;
+        writeAccesses++;
+        writingThread = callingThread;
+    }
+
+    public synchronized void unlockWrite() throws InterruptedException{
+        writeAccesses--;
+        if(writeAccesses == 0){
+            writingThread = null;
+        }
+        notifyAll();
+    }
+
+    private boolean canGrantWriteAccess(Thread callingThread){
+        if(isOnlyReader(callingThread)) return true;
+        if(hasReaders()) return false;
+        if(writingThread == null) return true;
+        if(!isWriter(callingThread)) return false;
+        return true;
+    }
+
+    private boolean hasReaders(){
+        return readingThreads.size() > 0;
+    }
+
+    private boolean isWriter(Thread callingThread){
+        return writingThread == callingThread;
+    }
+
+    private boolean isOnlyReader(Thread thread){
+        return readers == 1 && readingThreads.get(callingThread) != null;
+    }
+}
+写锁降级到读锁
+有时拥有写锁的线程也希望得到读锁。如果一个线程拥有了写锁，那么自然其它线程是不可能拥有读锁或写锁了。所以对于一个拥有写锁的线程，再获得读锁，是不会有什么危险的。我们仅仅需要对上面 canGrantReadAccess 方法进行简单地修改：
+
+public class ReadWriteLock{
+    private boolean canGrantReadAccess(Thread callingThread){
+        if(isWriter(callingThread)) return true;
+        if(writingThread != null) return false;
+        if(isReader(callingThread) return true;
+        if(writeRequests > 0) return false;
+        return true;
+    }
+}
