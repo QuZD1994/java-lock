@@ -1,0 +1,89 @@
+Java 中的 synchronized 同步块是可重入的。这意味着如果一个 java 线程进入了代码中的 synchronized 同步块，并因此获得了该同步块使用的同步对象对应的管程上的锁，那么这个线程可以进入由同一个管程对象所同步的另一个 java 代码块。下面是一个例子：
+public class Reentrant{
+    public synchronized outer(){
+        inner();
+    }
+
+    public synchronized inner(){
+        //do something
+    }
+}
+注意 outer()和 inner()都被声明为 synchronized，这在 Java 中和 synchronized(this)块等效。如果一个线程调用了 outer()，在 outer()里调用 inner()就没有什么问题，因为这两个方法（代码块）都由同一个管程对象（”this”)所同步。如果一个线程已经拥有了一个管程对象上的锁，那么它就有权访问被这个管程对象同步的所有代码块。这就是可重入。线程可以进入任何一个它已经拥有的锁所同步着的代码块。
+
+前面给出的锁实现不是可重入的。如果我们像下面这样重写 Reentrant 类，当线程调用 outer()时，会在 inner()方法的 lock.lock()处阻塞住。
+
+public class Reentrant2{
+    Lock lock = new Lock();
+
+    public outer(){
+        lock.lock();
+        inner();
+        lock.unlock();
+    }
+
+    public synchronized inner(){
+        lock.lock();
+        //do something
+        lock.unlock();
+    }
+}
+
+调用 outer()的线程首先会锁住 Lock 实例，然后继续调用 inner()。inner()方法中该线程将再一次尝试锁住 Lock 实例，结果该动作会失败（也就是说该线程会被阻塞），因为这个 Lock 实例已经在 outer()方法中被锁住了。
+
+两次 lock()之间没有调用 unlock()，第二次调用 lock 就会阻塞，看过 lock()实现后，会发现原因很明显：
+
+public class Lock{
+    boolean isLocked = false;
+
+    public synchronized void lock()
+        throws InterruptedException{
+        while(isLocked){
+            wait();
+        }
+        isLocked = true;
+    }
+
+    ...
+}
+
+一个线程是否被允许退出 lock()方法是由 while 循环（自旋锁）中的条件决定的。当前的判断条件是只有当 isLocked 为 false 时 lock 操作才被允许，而没有考虑是哪个线程锁住了它。
+
+为了让这个 Lock 类具有可重入性，我们需要对它做一点小的改动：
+
+public class Lock{
+    boolean isLocked = false;
+    Thread  lockedBy = null;
+    int lockedCount = 0;
+
+    public synchronized void lock()
+        throws InterruptedException{
+        Thread callingThread =
+            Thread.currentThread();
+        while(isLocked && lockedBy != callingThread){
+            wait();
+        }
+        isLocked = true;
+        lockedCount++;
+        lockedBy = callingThread;
+  }
+
+    public synchronized void unlock(){
+        if(Thread.curentThread() ==
+            this.lockedBy){
+            lockedCount--;
+
+            if(lockedCount == 0){
+                isLocked = false;
+                notify();
+            }
+        }
+    }
+
+    ...
+}
+
+注意到现在的 while 循环（自旋锁）也考虑到了已锁住该 Lock 实例的线程。如果当前的锁对象没有被加锁(isLocked = false)，或者当前调用线程已经对该 Lock 实例加了锁，那么 while 循环就不会被执行，调用 lock()的线程就可以退出该方法（译者注：“被允许退出该方法”在当前语义下就是指不会调用 wait()而导致阻塞）。
+
+除此之外，我们需要记录同一个线程重复对一个锁对象加锁的次数。否则，一次 unblock()调用就会解除整个锁，即使当前锁已经被加锁过多次。在 unlock()调用没有达到对应 lock()调用的次数之前，我们不希望锁被解除。
+
+现在这个 Lock 类就是可重入的了
